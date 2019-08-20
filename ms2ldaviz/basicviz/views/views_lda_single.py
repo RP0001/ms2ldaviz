@@ -288,6 +288,50 @@ def show_doc(request, doc_id):
     return render(request, 'basicviz/show_doc.html', context_dict)
 
 
+def show_doc_radu(request, doc_id):
+    document = Document.objects.get(id=doc_id)
+    experiment = document.experiment
+
+    if not check_user(request, experiment):
+        return HttpResponse("You don't have permission to access this page")
+    print document.experiment.experiment_type
+    if document.experiment.experiment_type == '0':
+        context_dict = get_doc_context_dict(document)
+    elif document.experiment.experiment_type == '1':
+        context_dict = get_decomp_doc_context_dict(document)
+    else:
+        context_dict = {}
+    print context_dict
+    context_dict['document'] = document
+    context_dict['experiment'] = experiment
+
+    if document.csid:
+        context_dict['csid'] = document.csid
+
+    # remove this -- deprecated...
+    if document.image_url:
+        context_dict['image_url'] = document.image_url
+
+    if not document.mol_string:
+        from chemspipy import ChemSpider
+        cs = ChemSpider(settings.CHEMSPIDER_APIKEY)
+        md = jsonpickle.decode(document.metadata)
+        if 'InChIKey' in md or 'inchikey' in md:
+            mol = cs.convert(md.get('InChIKey', md['inchikey']),'InChIKey','mol')
+            if mol:
+                document.mol_string = mol
+                document.save()
+
+    if document.mol_string:
+        context_dict['mol_string'] = document.mol_string
+        context_dict['image_url'] = None
+
+    sub_terms = document.substituentinstance_set.all()
+    if len(sub_terms) > 0:
+        context_dict['sub_terms'] = sub_terms
+
+    return render(request, 'basicviz/show_doc.html', context_dict)
+
 def get_doc_context_dict(document):
     features = FeatureInstance.objects.filter(document=document)
     context_dict = {}
@@ -2142,3 +2186,4 @@ def delete_experiment(request,experiment_id):
     else:
         experiment.delete()
     return basicviz_index(request)
+

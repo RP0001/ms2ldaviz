@@ -5,7 +5,7 @@ from django.db import transaction
 
 import numpy as np
 import pandas as pd
-from keras.models import load_model
+# from keras.models import load_model
 
 from basicviz.models import Document, FeatureInstance
 from annotation.models import SubstituentTerm, SubstituentInstance

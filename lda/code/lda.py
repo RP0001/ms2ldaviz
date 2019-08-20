@@ -279,6 +279,8 @@ class VariationalLDA(object):
                     frag_formulas[str(formula)] = word
 
 
+
+
         for topic in topics['beta']:
             matched_probability = 0.0
             matches = {}

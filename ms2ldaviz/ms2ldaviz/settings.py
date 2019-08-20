@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/1.9/ref/settings/
 """
 
+
 import os
 
 # Build paths inside the project like this: os.path.join(BASE_DIR, ...)
@@ -23,13 +24,13 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SECRET_KEY = '^(2&40trp_*ei%$_*p-k598#hu3-w(@9%&&dr&#0##dpag=c%+'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+DEBUG = True
 
 ALLOWED_HOSTS = ['*']
 
 
 # Application definition
-
+# Radu added import export
 INSTALLED_APPS = [
     'grappelli',
     'django_markdown2',
@@ -48,7 +49,8 @@ INSTALLED_APPS = [
     'decomposition',
     'ms1analysis',
     'django_extensions',
-    'motifdb'
+    'motifdb',
+    'import_export'
 ]
 
 MIDDLEWARE_CLASSES = [
@@ -87,15 +89,26 @@ WSGI_APPLICATION = 'ms2ldaviz.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/1.9/ref/settings/#databases
 
-# for the digital ocean server
+# for the digital ocean server - temporarily turned off RADU
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.postgresql_psycopg2',
+#         'NAME': 'django',
+#         'USER': 'django',
+#         'PASSWORD': 'j7z3rL40w9',
+#         'HOST': 'localhost',
+#         'PORT': '',
+#     }
+# }
+#temporarily added by radu due to msiconfig
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql_psycopg2',
-        'NAME': 'django',
-        'USER': 'django',
-        'PASSWORD': 'j7z3rL40w9',
+        'NAME': 'postgres',
+        'USER': 'postgres',
+        'PASSWORD': 'postgres',
         'HOST': 'localhost',
-        'PORT': '',
+        'PORT': '5432',
     }
 }
 
@@ -153,3 +166,5 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 10000000
 # Chemspider token used on production server,
 # Replace it with own token (https://developer.rsc.org/) for your own server.
 CHEMSPIDER_APIKEY='b2VqZPJug1yDvbPgawGdGO59pdBw4eaf'
+
+IMPORT_EXPORT_USE_TRANSACTIONS=False
