@@ -34,6 +34,17 @@ from basicviz.constants import EXPERIMENT_STATUS_CODE
 from motifdb.views import motif as db_view_motif
 from motifdb.models import MDBMotif
 
+#RADU'S IMPORTS
+import sys
+import django
+import json
+from basicviz.models import Experiment, Alpha, Mass2MotifInstance, FeatureInstance, Feature, Document, Mass2Motif, DocumentMass2Motif, FeatureMass2MotifInstance
+import pylab as plt
+import csv
+from scipy.special import polygamma as pg
+from scipy.special import psi as psi
+from lda import SMALL_NUMBER
+
 def check_user(request, experiment):
     user = request.user
     try:
@@ -287,21 +298,28 @@ def show_doc(request, doc_id):
 
     return render(request, 'basicviz/show_doc.html', context_dict)
 
-
+# RADU'S REFACTORING STARTS HERE
+# Show doc page is chosen for refactoring.
+# This allows us to see the prototype in action for the actual web application (see STAGE III in project report).
+# define view
 def show_doc_radu(request, doc_id):
-    document = Document.objects.get(id=doc_id)
-    experiment = document.experiment
+    document = Document.objects.get(id=doc_id) #choose specific document (ex 270414 doc id)
+    experiment = document.experiment #choose specific experiment (ex 190 exp_id)
 
-    if not check_user(request, experiment):
+    if not check_user(request, experiment): # assume permission granted
         return HttpResponse("You don't have permission to access this page")
     print document.experiment.experiment_type
+    # we only care about experiment type 0, since it is related to LDA and not decomposition
+    # MODIFY THIS SECTION
     if document.experiment.experiment_type == '0':
-        context_dict = get_doc_context_dict(document)
+        context_dict = get_doc_context_dict_radu(document)
+    # experiment type 1 (decomposition) remains the same - this is not for change
     elif document.experiment.experiment_type == '1':
         context_dict = get_decomp_doc_context_dict(document)
     else:
         context_dict = {}
     print context_dict
+    # The assignment to the content dict remains the same
     context_dict['document'] = document
     context_dict['experiment'] = experiment
 
@@ -330,7 +348,235 @@ def show_doc_radu(request, doc_id):
     if len(sub_terms) > 0:
         context_dict['sub_terms'] = sub_terms
 
-    return render(request, 'basicviz/show_doc.html', context_dict)
+    return render(request, 'basicviz/show_doc_radu.html', context_dict)
+
+
+# change the way the context_dict is retrieved in the following method
+# instead of getting the gamma's and phi's from the database directly, these should be calculated
+def get_doc_context_dict_radu(document):
+    features = FeatureInstance.objects.filter(document=document)
+    context_dict = {}
+    context_dict['features'] = features #get features for a specific document
+    experiment = document.experiment # get the experiment id for the document
+
+    # TIME = 0
+    # GAMMA SECTION
+    mass2motif_instances = get_docm2m_bydoc_radu(document)
+    context_dict['mass2motifs'] = mass2motif_instances
+
+    # PHI SECTION
+    feature_mass2motif_instances = []
+    original_experiment = None
+    for feature_instance in features:
+        if feature_instance.intensity > 0:
+            m2m = FeatureMass2MotifInstance.objects.filter(featureinstance=feature_instance)
+            smiles_to_docs = defaultdict(set)
+            docs_to_subs = {}
+
+            # if this experiment already has magma annotation, then we just get the magma annotations
+            # of the feature instances in this document. Otherwise we use the global feature to find
+            # the magma annotation from the original experiment that has the magma annotation
+            if experiment.has_magma_annotation:
+                subs = FeatureInstance2Sub.objects.filter(feature=feature_instance)
+                for sub in subs:
+                    smiles = sub.sub.smiles
+                    smiles_to_docs[smiles].add(document)
+                    docs_to_subs[document] = sub
+            else:
+                # get shared global feature
+                shared_feature = feature_instance.feature
+                # if shared_feature.experiment.has_magma_annotation:
+
+                # get original docs having shared feature
+                original_experiment = shared_feature.experiment
+                original_docs = Document.objects.filter(experiment=original_experiment)
+
+                # get the feature instances in the original docs having shared feature
+                original_feature_instances = FeatureInstance.objects.filter(feature=shared_feature,
+                                                                            document__in=original_docs)
+
+                # get magma subs from the original feature instances
+                subs = FeatureInstance2Sub.objects.filter(feature__in=original_feature_instances)
+                for sub in subs:
+                    smiles = sub.sub.smiles
+                    doc = sub.feature.document
+                    smiles_to_docs[smiles].add(sub.feature.document)
+                    docs_to_subs[doc] = sub
+
+            # count how many docs are found containing each magma substructure linked to this feature instance
+            # if the experiment has_magma_annotation, this should always be one
+            smiles_docs_count = Counter()
+            for smiles in smiles_to_docs:
+                n_docs = len(smiles_to_docs[smiles])
+                if experiment.has_magma_annotation:
+                    assert n_docs == 1
+                smiles_docs_count[smiles] += n_docs
+
+            most_common_subs = []
+            for smiles, count in smiles_docs_count.most_common():
+                docs = smiles_to_docs[smiles]
+                subs = [docs_to_subs[d] for d in docs]
+                together = zip(docs, subs)
+                most_common_subs.append((smiles, count, together, ))
+            item = (feature_instance, m2m, most_common_subs, len(most_common_subs), )
+            feature_mass2motif_instances.append(item)
+
+    if original_experiment:
+        context_dict['original_experiment'] = original_experiment
+    context_dict['experiment'] = experiment
+    feature_mass2motif_instances = sorted(feature_mass2motif_instances, key=lambda x: x[0].intensity, reverse=True)
+    context_dict['fm2m'] = feature_mass2motif_instances
+    context_dict['top_n'] = 5 # show the top-5 magma annotations per feature initially
+    return context_dict
+
+
+## function is used to get MocumentMassMass2Motif by document only
+def get_docm2m_bydoc_radu(document, doc_m2m_prob_threshold=None, doc_m2m_overlap_threshold=None):
+    experiment = document.experiment
+
+    doc_m2m_prob_threshold, doc_m2m_overlap_threshold = get_prob_overlap_thresholds(experiment)
+    #instead of being retrieved from the database gamma is calculated here
+    dm2m = DocumentMass2Motif.objects.filter(document=document, probability__gte=doc_m2m_prob_threshold,
+                                             overlap_score__gte=doc_m2m_overlap_threshold).order_by('-probability')
+
+    return dm2m
+
+
+# Implementation of the prototype here to calculate Gamma and Phi on the spot.
+def get_phi_gamma_radu(document, doc_m2m_prob_threshold=None, doc_m2m_overlap_threshold=None):
+    # Setup common variables.
+    experiment = document.experiment
+    SMALL_NUMBER = 1e-100
+    # Get all words/features in the database relevant for the experiment.
+    features = Feature.objects.filter(experiment_id=experiment)
+    experiment_words = []
+    for f in features:
+        if f.id not in experiment_words:
+            experiment_words.append(f.id)
+
+    # Match each word to an index.
+    unique_words = {}
+    index = 0
+    for word in experiment_words:
+        if word not in unique_words.keys():
+            unique_words.update({word: index})
+            index += 1
+
+
+def setup_corpus_radu(experiment, document):
+    # Get words/features for all documents chosen. The output columns are doc_id, word_id and intensity.
+    unique_words = setup_corpus_words_radu(experiment)
+    unique_docs = setup_corpus_docs_radu(document)
+    feature_instances = FeatureInstance.objects.filter(document_id__in=unique_docs.keys(),
+                                                       feature_id__in=unique_words.keys())
+    doc_word_data = []
+    for f in feature_instances:
+        doc_word_data.append([unique_docs[int(f.document_id)], unique_words[int(f.feature_id)], f.intensity])
+    # Create the corpus in {doc_id:{word_id:word_count}} form.
+    # Inner dictionary is created first {word:word_count} and then added to doc dictionary key.
+    temp_dict1 = {}
+    temp_dict2 = {}
+    for line in doc_word_data:
+        doc = line[0]
+        word = line[1]
+        count = line[2]
+        temp_dict1.update({word: count})
+        if doc not in temp_dict2.keys():
+            temp_dict2.update({doc: temp_dict1})
+    corpus_dict = temp_dict2
+    return corpus_dict
+
+
+def setup_corpus_words_radu(experiment):
+    # Get all words/features in the database relevant for the experiment.
+    features = Feature.objects.filter(experiment_id=experiment)
+    experiment_words = []
+    for f in features:
+        if f.id not in experiment_words:
+            experiment_words.append(f.id)
+    # Match each word to an index.
+    unique_words = {}
+    index = 0
+    for word in experiment_words:
+        if word not in unique_words.keys():
+            unique_words.update({word: index})
+            index += 1
+    return unique_words
+
+
+def setup_corpus_topics_radu(experiment):
+    # Get topics for the experiment. Map them to indices.
+    mi = Mass2Motif.objects.filter(experiment=experiment)
+    unique_topics = {}
+    index = 0
+    for m in mi:
+        unique_topics.update({m.id: index})
+        index += 1
+    return unique_topics
+
+
+def setup_corpus_docs_radu(document):
+    # Map each document to a specific ID.
+    unique_docs = {}
+    i = 0 # if it would me more documents we would iterate i+=1, but we only have one document
+    unique_docs.update({document: i})
+    return unique_docs
+
+
+def setup_alpha_radu(experiment):
+    # Get Alphas from database. Transform them to topic_count length vector.
+    unique_topics = setup_corpus_topics_radu(experiment)
+    al = Alpha.objects.filter(mass2motif__experiment=experiment).order_by('mass2motif')
+    alphas = {}
+    for a in al:
+        alphas.update({unique_topics[a.mass2motif_id]: a.value})
+    n_motif = len(alphas)
+    alpha_vec = np.zeros(n_motif)
+    for pos, val in alphas.items():
+        alpha_vec[pos] = val
+    alpha_vector = alpha_vec
+    return alpha_vector
+
+
+def setup_beta_radu(experiment):
+    unique_topics = setup_corpus_topics_radu(experiment)
+    unique_words = setup_corpus_words_radu(experiment)
+    # Get the Beta values from the database in list form -> topic, word, probability.
+    beta_pre_pivot = []
+    mi = Mass2MotifInstance.objects.filter(mass2motif__experiment=experiment)
+    for m in mi:
+        beta_pre_pivot.append([unique_topics[m.mass2motif_id], unique_words[m.feature_id], m.probability])
+    # Create the Beta matrix.
+    output_arr_beta = np.array(beta_pre_pivot)
+    k = len(unique_topics)
+    w = len(unique_words)
+    pivot_table = np.zeros((k, w)).astype('float')
+    i = 0
+    max = len(beta_pre_pivot)
+    while i < max:
+        pivot_table[int(output_arr_beta[i][0]), int(output_arr_beta[i][1])] = output_arr_beta[i][2]
+        i += 1
+    # Normalise the beta matrix. Beta is now ready to be used in the E-step.
+    pivot_table_normalised = pivot_table
+    i = 0
+    while i < k:
+        row = pivot_table_normalised[i, :]
+        adjusted_row = row + SMALL_NUMBER
+        normalised_row = adjusted_row / np.sum(adjusted_row)
+        np.sum(normalised_row)
+        pivot_table_normalised[i, :] = normalised_row
+        i += 1
+    beta_matrix = pivot_table_normalised
+    return beta_matrix # left off here
+
+def perform_e_step_radu(experiment):
+
+
+
+
+
+    #RADU'S REFACTORING ENDS HERE
+
 
 def get_doc_context_dict(document):
     features = FeatureInstance.objects.filter(document=document)
