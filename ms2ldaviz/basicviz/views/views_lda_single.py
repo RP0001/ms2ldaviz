@@ -433,40 +433,38 @@ def get_doc_context_dict_radu(document):
 ## function is used to get MocumentMassMass2Motif by document only
 def get_docm2m_bydoc_radu(document, doc_m2m_prob_threshold=None, doc_m2m_overlap_threshold=None):
     experiment = document.experiment
-
-    doc_m2m_prob_threshold, doc_m2m_overlap_threshold = get_prob_overlap_thresholds(experiment)
+    doc_m2m_prob_threshold, doc_m2m_overlap_threshold = get_prob_overlap_thresholds(experiment) #just floats
     #instead of being retrieved from the database gamma is calculated here
-    dm2m = DocumentMass2Motif.objects.filter(document=document, probability__gte=doc_m2m_prob_threshold,
-                                             overlap_score__gte=doc_m2m_overlap_threshold).order_by('-probability')
+    #you need format: motif/probability/overlap_score/annotation
+    
+
+    # dm2m = DocumentMass2Motif.objects.filter(document=document, probability__gte=doc_m2m_prob_threshold,
+    #                                          overlap_score__gte=doc_m2m_overlap_threshold).order_by('-probability')
 
     return dm2m
 
 
 # Implementation of the prototype here to calculate Gamma and Phi on the spot.
-def get_phi_gamma_radu(document, doc_m2m_prob_threshold=None, doc_m2m_overlap_threshold=None):
+def get_phi_gamma_radu(document):
     # Setup common variables.
     experiment = document.experiment
-    SMALL_NUMBER = 1e-100
-    # Get all words/features in the database relevant for the experiment.
-    features = Feature.objects.filter(experiment_id=experiment)
-    experiment_words = []
-    for f in features:
-        if f.id not in experiment_words:
-            experiment_words.append(f.id)
-
-    # Match each word to an index.
-    unique_words = {}
-    index = 0
-    for word in experiment_words:
-        if word not in unique_words.keys():
-            unique_words.update({word: index})
-            index += 1
-
-
-def setup_corpus_radu(experiment, document):
-    # Get words/features for all documents chosen. The output columns are doc_id, word_id and intensity.
     unique_words = setup_corpus_words_radu(experiment)
+    w = len(unique_words)
     unique_docs = setup_corpus_docs_radu(document)
+    unique_topics = setup_corpus_topics_radu(experiment)
+    k = len(unique_topics)
+    corpus_dict = setup_corpus_radu(experiment, unique_words, unique_docs)
+    alpha_vector = setup_alpha_radu(experiment)
+    beta_matrix = setup_beta_radu(experiment, unique_words, unique_topics, k, w)
+    phi_matrix = init_phi_radu(corpus_dict, k)
+    gamma_matrix = init_gamma(corpus_dict, k)
+    phi_gamma_dict = perform_e_step_radu(experiment, k, corpus_dict, alpha_vector, beta_matrix,
+                                         gamma_matrix, phi_matrix, unique_words, iterations=1000)
+    return phi_gamma_dict
+
+
+def setup_corpus_radu(unique_words, unique_docs):
+    # Get words/features for all documents chosen. The output columns are doc_id, word_id and intensity.
     feature_instances = FeatureInstance.objects.filter(document_id__in=unique_docs.keys(),
                                                        feature_id__in=unique_words.keys())
     doc_word_data = []
@@ -538,9 +536,7 @@ def setup_alpha_radu(experiment):
     return alpha_vector
 
 
-def setup_beta_radu(experiment):
-    unique_topics = setup_corpus_topics_radu(experiment)
-    unique_words = setup_corpus_words_radu(experiment)
+def setup_beta_radu(experiment, unique_words, unique_topics, k, w):
     # Get the Beta values from the database in list form -> topic, word, probability.
     beta_pre_pivot = []
     mi = Mass2MotifInstance.objects.filter(mass2motif__experiment=experiment)
@@ -548,8 +544,6 @@ def setup_beta_radu(experiment):
         beta_pre_pivot.append([unique_topics[m.mass2motif_id], unique_words[m.feature_id], m.probability])
     # Create the Beta matrix.
     output_arr_beta = np.array(beta_pre_pivot)
-    k = len(unique_topics)
-    w = len(unique_words)
     pivot_table = np.zeros((k, w)).astype('float')
     i = 0
     max = len(beta_pre_pivot)
@@ -569,10 +563,51 @@ def setup_beta_radu(experiment):
     beta_matrix = pivot_table_normalised
     return beta_matrix # left off here
 
-def perform_e_step_radu(experiment):
 
+def perform_e_step_radu(experiment, K, corpus, alpha_vector, beta_matrix,
+                        gamma_matrix, phi_matrix, unique_words, iterations = 1000,):
+    n_words = int(len(unique_words))
+    temp_beta = np.zeros((K, n_words))
+    current_gamma = np.copy(gamma_matrix)
+    for i in range(iterations):
+        prev_gamma = np.copy(current_gamma)
+        for doc in corpus:
+            d = int(doc)
+            doc_dict = corpus[doc]
+            temp_gamma = np.zeros(K) + alpha_vector
+            for word in doc_dict:
+                w = int(word)
+                log_phi_matrix = np.log(beta_matrix[:, w]) + psi(gamma_matrix[d, :]).T
+                log_phi_matrix = np.exp(log_phi_matrix - log_phi_matrix.max())
+                phi_matrix[d][w] = log_phi_matrix / log_phi_matrix.sum()
+                temp_gamma += phi_matrix[d][w] * corpus[doc][word]
+                temp_beta[:, w] += phi_matrix[d][w] * corpus[doc][word]
+            gamma_matrix[d, :] = temp_gamma
+            pos = np.where(gamma_matrix[d, :] < SMALL_NUMBER)[0]
+            gamma_matrix[d, pos] = SMALL_NUMBER
+        current_gamma = np.copy(gamma_matrix)
+        #gamma_diff = ((current_gamma - prev_gamma) ** 2).sum()
+    return({'phi':phi_matrix, 'gamma':gamma_matrix})
 
+def init_phi_radu(corpus, K):
+    phi_matrix = {}
+    for doc in corpus:
+        d = int(doc)
+        phi_matrix[d] = {}
+        for word in corpus[doc]:
+            w = int(word)
+            phi_matrix[d][w] = np.zeros(K)
+    return phi_matrix
 
+def init_gamma(corpus, K, alpha):
+    alpha_vector=setup_alpha_radu()
+    gamma_matrix = np.zeros((int(len(corpus)), int(K)))  # 3x500 shape
+    for doc in corpus:
+        doc_total = 0.0
+        for word in corpus[doc]:
+            doc_total += corpus[doc][word]
+        gamma_matrix[int(doc), :] = alpha_vector + 1.0 * (doc_total / K)
+    return gamma_matrix
 
 
     #RADU'S REFACTORING ENDS HERE
