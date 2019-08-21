@@ -168,3 +168,11 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 10000000
 CHEMSPIDER_APIKEY='b2VqZPJug1yDvbPgawGdGO59pdBw4eaf'
 
 IMPORT_EXPORT_USE_TRANSACTIONS=False
+
+#filesystem cache here
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.filebased.FileBasedCache',
+        'LOCATION': 'c:/deleteme',
+    }
+}

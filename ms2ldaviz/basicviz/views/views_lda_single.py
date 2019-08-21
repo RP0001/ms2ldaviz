@@ -44,6 +44,7 @@ import csv
 from scipy.special import polygamma as pg
 from scipy.special import psi as psi
 from lda import SMALL_NUMBER
+from django.core.cache import cache
 
 def check_user(request, experiment):
     user = request.user
@@ -360,8 +361,13 @@ def get_doc_context_dict_radu(document):
     experiment = document.experiment # get the experiment id for the document
 
     # TIME = 0
+    # GET PHI & GAMMA CACHED.
+    phi_gamma_dict = cache.get('phi_gamma_radu')
+    if phi_gamma_dict == None:
+        phi_gamma_dict = get_phi_gamma_radu(document)
+        cache.set('phi_gamma_radu', phi_gamma_dict, 600)
     # GAMMA SECTION
-    mass2motif_instances = get_docm2m_bydoc_radu(document)
+    mass2motif_instances = get_docm2m_bydoc_radu(document, phi_gamma_dict)
     context_dict['mass2motifs'] = mass2motif_instances
 
     # PHI SECTION
@@ -431,17 +437,27 @@ def get_doc_context_dict_radu(document):
 
 
 ## function is used to get MocumentMassMass2Motif by document only
-def get_docm2m_bydoc_radu(document, doc_m2m_prob_threshold=None, doc_m2m_overlap_threshold=None):
+def get_docm2m_bydoc_radu(document, phi_gamma_dict):
     experiment = document.experiment
     doc_m2m_prob_threshold, doc_m2m_overlap_threshold = get_prob_overlap_thresholds(experiment) #just floats
     #instead of being retrieved from the database gamma is calculated here
     #you need format: motif/probability/overlap_score/annotation
-    
+    initial_gamma_list = phi_gamma_dict['gamma']
+    final_gamma_list = []
+    for line in initial_gamma_list:
+        if line[1] > doc_m2m_prob_threshold:
+            final_gamma_list.append([line[0],line[1],doc_m2m_overlap_threshold])
+    dm2m = final_gamma_list
 
+
+    # old version here
     # dm2m = DocumentMass2Motif.objects.filter(document=document, probability__gte=doc_m2m_prob_threshold,
     #                                          overlap_score__gte=doc_m2m_overlap_threshold).order_by('-probability')
 
     return dm2m
+
+
+
 
 
 # Implementation of the prototype here to calculate Gamma and Phi on the spot.
@@ -453,15 +469,14 @@ def get_phi_gamma_radu(document):
     unique_docs = setup_corpus_docs_radu(document)
     unique_topics = setup_corpus_topics_radu(experiment)
     k = len(unique_topics)
-    corpus_dict = setup_corpus_radu(experiment, unique_words, unique_docs)
+    corpus_dict = setup_corpus_radu(unique_words, unique_docs)
     alpha_vector = setup_alpha_radu(experiment)
     beta_matrix = setup_beta_radu(experiment, unique_words, unique_topics, k, w)
     phi_matrix = init_phi_radu(corpus_dict, k)
-    gamma_matrix = init_gamma(corpus_dict, k)
+    gamma_matrix = init_gamma(corpus_dict, k, alpha_vector)
     phi_gamma_dict = perform_e_step_radu(experiment, k, corpus_dict, alpha_vector, beta_matrix,
-                                         gamma_matrix, phi_matrix, unique_words, iterations=1000)
+                                         gamma_matrix, phi_matrix, unique_words, unique_topics, iterations=1000)
     return phi_gamma_dict
-
 
 def setup_corpus_radu(unique_words, unique_docs):
     # Get words/features for all documents chosen. The output columns are doc_id, word_id and intensity.
@@ -515,9 +530,10 @@ def setup_corpus_topics_radu(experiment):
 
 def setup_corpus_docs_radu(document):
     # Map each document to a specific ID.
+    print document.id
     unique_docs = {}
     i = 0 # if it would me more documents we would iterate i+=1, but we only have one document
-    unique_docs.update({document: i})
+    unique_docs.update({document.id: i})
     return unique_docs
 
 
@@ -565,7 +581,7 @@ def setup_beta_radu(experiment, unique_words, unique_topics, k, w):
 
 
 def perform_e_step_radu(experiment, K, corpus, alpha_vector, beta_matrix,
-                        gamma_matrix, phi_matrix, unique_words, iterations = 1000,):
+                        gamma_matrix, phi_matrix, unique_words, unique_topics, iterations = 1000):
     n_words = int(len(unique_words))
     temp_beta = np.zeros((K, n_words))
     current_gamma = np.copy(gamma_matrix)
@@ -587,7 +603,22 @@ def perform_e_step_radu(experiment, K, corpus, alpha_vector, beta_matrix,
             gamma_matrix[d, pos] = SMALL_NUMBER
         current_gamma = np.copy(gamma_matrix)
         #gamma_diff = ((current_gamma - prev_gamma) ** 2).sum()
-    return({'phi':phi_matrix, 'gamma':gamma_matrix})
+    gamma_vector = get_normalised_gamma_radu(gamma_matrix, unique_topics)
+    return {'phi':phi_matrix, 'gamma':gamma_vector}
+
+
+def get_normalised_gamma_radu(gamma_matrix, unique_topics):
+    gamma_vector = np.copy(gamma_matrix[0])
+    gamma_vector /= np.sum(gamma_vector)
+    gamma_vector_list = []
+    for topic in gamma_vector:
+        probability = topic
+        position = gamma_vector.tolist().index(topic)
+        for name, pos in unique_topics.items():
+            if pos == position:
+                print position
+                gamma_vector_list.append([name, probability])
+    return gamma_vector_list
 
 def init_phi_radu(corpus, K):
     phi_matrix = {}
@@ -599,8 +630,8 @@ def init_phi_radu(corpus, K):
             phi_matrix[d][w] = np.zeros(K)
     return phi_matrix
 
-def init_gamma(corpus, K, alpha):
-    alpha_vector=setup_alpha_radu()
+def init_gamma(corpus, K, alpha_vector):
+    alpha_vector=alpha_vector
     gamma_matrix = np.zeros((int(len(corpus)), int(K)))  # 3x500 shape
     for doc in corpus:
         doc_total = 0.0

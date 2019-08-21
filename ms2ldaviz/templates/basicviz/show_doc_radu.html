@@ -127,9 +127,9 @@
                         <tbody>
                         {% for mass2motif in mass2motifs %}
                             <tr>
-                                <td>{{ mass2motif.mass2motif.name }}</td>
-                                <td>{{ mass2motif.probability|floatformat:"3"}}</td>
-                                <td>{{ mass2motif.overlap_score|floatformat:"3"}}</td>
+                                <td>{{ mass2motif.0}}</td>
+                                <td>{{ mass2motif.1|floatformat:"3"}}</td>
+                                <td>{{ mass2motif.2|floatformat:"3"}}</td>
                                 <td>{{ mass2motif.mass2motif.annotation }}</td>
                             </tr>
                         {% endfor %}
