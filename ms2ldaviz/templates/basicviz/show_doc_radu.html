@@ -220,7 +220,7 @@
                                 <td>{{ feature.intensity }}</td>
                                 <td>
                                     {% for m2minstance in m2minstances %}
-                                        {{ m2minstance.mass2motif }} ({{ m2minstance.probability|floatformat:"3"}})<br/>
+                                        {{ m2minstance.0 }} ({{ m2minstance.1|floatformat:"3"}})<br/>
                                     {% endfor %}
                                 </td>
                                 <td>

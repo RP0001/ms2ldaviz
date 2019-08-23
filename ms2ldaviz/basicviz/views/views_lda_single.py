@@ -375,7 +375,8 @@ def get_doc_context_dict_radu(document):
     original_experiment = None
     for feature_instance in features:
         if feature_instance.intensity > 0:
-            m2m = FeatureMass2MotifInstance.objects.filter(featureinstance=feature_instance)
+            # m2m = FeatureMass2MotifInstance.objects.filter(featureinstance=feature_instance)
+            m2m = get_featurem2m_equivalent_radu(feature_instance, phi_gamma_dict)
             smiles_to_docs = defaultdict(set)
             docs_to_subs = {}
 
@@ -435,6 +436,15 @@ def get_doc_context_dict_radu(document):
     context_dict['top_n'] = 5 # show the top-5 magma annotations per feature initially
     return context_dict
 
+#this should be of the format m2m/probability
+def get_featurem2m_equivalent_radu(feature, phi_gamma_dict):
+    m2m = []
+    id = phi_gamma_dict['unique_words'][feature.feature_id]
+    topic_array = phi_gamma_dict['phi'][0][id]
+    for topic in topic_array:
+        if topic >= 0.01:
+            m2m.append([list(topic_array).index(topic), topic])
+    return m2m
 
 ## function is used to get MocumentMassMass2Motif by document only
 def get_docm2m_bydoc_radu(document, phi_gamma_dict):
@@ -476,6 +486,7 @@ def get_phi_gamma_radu(document):
     gamma_matrix = init_gamma(corpus_dict, k, alpha_vector)
     phi_gamma_dict = perform_e_step_radu(experiment, k, corpus_dict, alpha_vector, beta_matrix,
                                          gamma_matrix, phi_matrix, unique_words, unique_topics, iterations=1000)
+    phi_gamma_dict.update({'unique_words':unique_words})
     return phi_gamma_dict
 
 def setup_corpus_radu(unique_words, unique_docs):
