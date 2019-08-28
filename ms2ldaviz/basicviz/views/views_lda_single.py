@@ -35,19 +35,15 @@ from motifdb.views import motif as db_view_motif
 from motifdb.models import MDBMotif
 
 #RADU'S IMPORTS
-import sys
-import django
 import json
 from basicviz.models import Experiment, Alpha, Mass2MotifInstance, FeatureInstance, Feature, Document, Mass2Motif, DocumentMass2Motif, FeatureMass2MotifInstance
-import pylab as plt
 import csv
-from scipy.special import polygamma as pg
 from scipy.special import psi as psi
 from lda import SMALL_NUMBER
 from django.core.cache import cache
 
-#RADU's caching variables
-cache_time=6000
+#RADU'S CACHING VARIABLES
+cache_time=6000 #we assume all caching is maintained for 6000 seconds
 
 def check_user(request, experiment):
     user = request.user
@@ -302,22 +298,22 @@ def show_doc(request, doc_id):
 
     return render(request, 'basicviz/show_doc.html', context_dict)
 
-# RADU'S REFACTORING STARTS HERE
-# Show doc page is chosen for refactoring.
-# This allows us to see the prototype in action for the actual web application (see STAGE III in project report).
-# define view
+
+# RADU'S REFACTORING STARTS HERE************************************************************************
+# The following code has been refactored from the already existing code at https://github.com/sdrogers/ms2ldaviz.
+# The author therefore does not claim ownership over any of the modified code.
+# Show_doc view has been chosen for refactoring.
 def show_doc_radu(request, doc_id):
     document = Document.objects.get(id=doc_id) #choose specific document (ex 270414 doc id)
-    experiment = document.experiment #choose specific experiment (ex 190 exp_id)
-
+    experiment = document.experiment #check the corresponding experiment from the document
     if not check_user(request, experiment): # assume permission granted
         return HttpResponse("You don't have permission to access this page")
     print document.experiment.experiment_type
-    # we only care about experiment type 0, since it is related to LDA and not decomposition
-    # MODIFY THIS SECTION
+    # Refactoring concerns only experiment type 0, since it is related to LDA and not decomposition.
+    # This is the section of the view that needs to be modified:
     if document.experiment.experiment_type == '0':
         context_dict = get_doc_context_dict_radu(document)
-    # experiment type 1 (decomposition) remains the same - this is not for change
+    # With the exception of the rendering line below, the rest of the view remains unchanged.
     elif document.experiment.experiment_type == '1':
         context_dict = get_decomp_doc_context_dict(document)
     else:
@@ -351,38 +347,38 @@ def show_doc_radu(request, doc_id):
     sub_terms = document.substituentinstance_set.all()
     if len(sub_terms) > 0:
         context_dict['sub_terms'] = sub_terms
-
+    # Render to the newly mapped template for the refactored code.
     return render(request, 'basicviz/show_doc_radu.html', context_dict)
 
 
-# change the way the context_dict is retrieved in the following method
-# instead of getting the gamma's and phi's from the database directly, these should be calculated
+# Change the way the context_dict is retrieved for the refactored show_doc_radu view.
+# Instead of getting Theta and Phi values from the database, these are calculated instead.
 def get_doc_context_dict_radu(document):
     features = FeatureInstance.objects.filter(document=document)
     context_dict = {}
-    context_dict['features'] = features #get features for a specific document
-    experiment = document.experiment # get the experiment id for the document
+    context_dict['features'] = features # Get all the features for a specific document.
+    experiment = document.experiment # Get chosen document experiment ID.
 
-    # TIME = 0
-    # GET PHI & GAMMA CACHED.
+    # Check if Phi and Theta are in the cache, if not compute them on the fly.
     document_suffix = str(document.id)
     phi_gamma_dict = cache.get('phi_gamma_radu_'+document_suffix)
     if phi_gamma_dict == None:
         phi_gamma_dict = get_phi_gamma_radu(document)
-        cache.set('phi_gamma_radu_'+document_suffix, phi_gamma_dict, 6000)
-    # GAMMA SECTION
+        cache.set('phi_gamma_radu_'+document_suffix, phi_gamma_dict, cache_time)
+    # Get Theta on the fly without retrieving it from the database.
     mass2motif_instances = get_docm2m_bydoc_radu(document, phi_gamma_dict)
     context_dict['mass2motifs'] = mass2motif_instances
 
-    # PHI SECTION
+    # Get Phi on the fly without retrieving it from the database.
     feature_mass2motif_instances = []
     original_experiment = None
     for feature_instance in features:
         if feature_instance.intensity > 0:
-            # m2m = FeatureMass2MotifInstance.objects.filter(featureinstance=feature_instance)
             m2m = get_featurem2m_equivalent_radu(feature_instance, phi_gamma_dict)
             smiles_to_docs = defaultdict(set)
             docs_to_subs = {}
+
+    #THE REST OF THE CODE FROM THIS METHOD REMAINS UNCHANGED.
 
             # if this experiment already has magma annotation, then we just get the magma annotations
             # of the feature instances in this document. Otherwise we use the global feature to find
@@ -440,23 +436,23 @@ def get_doc_context_dict_radu(document):
     context_dict['top_n'] = 5 # show the top-5 magma annotations per feature initially
     return context_dict
 
-#this should be of the format m2m/probability
+
+# Computes FeatureMass2Motif data on the fly and returns it in list form: [topic_name, topic_probability]
 def get_featurem2m_equivalent_radu(feature, phi_gamma_dict):
     m2m = []
     id = phi_gamma_dict['unique_words'][feature.feature_id]
     topic_array = phi_gamma_dict['phi'][0][id]
     for topic_probability in topic_array:
         if topic_probability >= 0.01:
-            m2m.append([phi_gamma_dict['topic_index2name'][list(topic_array).index(topic_probability)], topic_probability])
+            topic_name = phi_gamma_dict['topic_index2name'][list(topic_array).index(topic_probability)]
+            m2m.append([topic_name, topic_probability])
     return m2m
 
 
-## function is used to get MocumentMassMass2Motif by document only
+# Computes DocumentMass2MotifData on the fly, retrieves it in list form: [topic_name, probability, overlap]
 def get_docm2m_bydoc_radu(document, phi_gamma_dict):
     experiment = document.experiment
-    doc_m2m_prob_threshold, doc_m2m_overlap_threshold = get_prob_overlap_thresholds(experiment) #just floats
-    #instead of being retrieved from the database gamma is calculated here
-    #you need format: motif/probability/overlap_score/annotation
+    doc_m2m_prob_threshold, doc_m2m_overlap_threshold = get_prob_overlap_thresholds(experiment)
     initial_gamma_list = phi_gamma_dict['gamma']
     final_gamma_list = []
     for line in initial_gamma_list:
@@ -466,21 +462,12 @@ def get_docm2m_bydoc_radu(document, phi_gamma_dict):
             probability = line[1]
             final_gamma_list.append([mass2motif_name, probability,doc_m2m_overlap_threshold])
     dm2m = final_gamma_list
-
-
-    # old version here
-    # dm2m = DocumentMass2Motif.objects.filter(document=document, probability__gte=doc_m2m_prob_threshold,
-    #                                          overlap_score__gte=doc_m2m_overlap_threshold).order_by('-probability')
-
     return dm2m
-
-
-
 
 
 # Implementation of the prototype here to calculate Gamma and Phi on the spot.
 def get_phi_gamma_radu(document):
-    # Setup common variables.
+    # Setup common variables for the e-step. 
     experiment = document.experiment
     unique_words = setup_corpus_words_radu(experiment)
     w = len(unique_words)
@@ -627,8 +614,11 @@ def perform_e_step_radu(experiment, K, corpus, alpha_vector, beta_matrix,
     n_words = int(len(unique_words))
     temp_beta = np.zeros((K, n_words))
     current_gamma = np.copy(gamma_matrix)
-    # continue_iterations = True
-    for i in range(iterations):
+    continue_iterations=True
+    i = 0
+    while continue_iterations==True:
+        i+=1
+        print 'iteration' + str(i)
         prev_gamma = np.copy(current_gamma)
         for doc in corpus:
             d = int(doc)
@@ -645,10 +635,12 @@ def perform_e_step_radu(experiment, K, corpus, alpha_vector, beta_matrix,
             pos = np.where(gamma_matrix[d, :] < SMALL_NUMBER)[0]
             gamma_matrix[d, pos] = SMALL_NUMBER
         current_gamma = np.copy(gamma_matrix)
-        #gamma_diff = ((current_gamma - prev_gamma) ** 2).sum()
+        gamma_diff = ((current_gamma - prev_gamma)**2).sum()
+        print gamma_diff
+        if gamma_diff < 1e-15:
+            continue_iterations = False
     gamma_vector = get_normalised_gamma_radu(gamma_matrix, unique_topics)
     return {'phi':phi_matrix, 'gamma':gamma_vector}
-
 
 def get_normalised_gamma_radu(gamma_matrix, unique_topics):
     gamma_vector = np.copy(gamma_matrix[0])
@@ -684,7 +676,7 @@ def init_gamma(corpus, K, alpha_vector):
     return gamma_matrix
 
 
-    #RADU'S REFACTORING ENDS HERE
+    #RADU'S REFACTORING ENDS HERE***************************************************************************
 
 
 def get_doc_context_dict(document):
