@@ -46,6 +46,9 @@ from scipy.special import psi as psi
 from lda import SMALL_NUMBER
 from django.core.cache import cache
 
+#RADU's caching variables
+cache_time=6000
+
 def check_user(request, experiment):
     user = request.user
     try:
@@ -362,10 +365,11 @@ def get_doc_context_dict_radu(document):
 
     # TIME = 0
     # GET PHI & GAMMA CACHED.
-    phi_gamma_dict = cache.get('phi_gamma_radu')
+    document_suffix = str(document.id)
+    phi_gamma_dict = cache.get('phi_gamma_radu_'+document_suffix)
     if phi_gamma_dict == None:
         phi_gamma_dict = get_phi_gamma_radu(document)
-        cache.set('phi_gamma_radu', phi_gamma_dict, 600)
+        cache.set('phi_gamma_radu_'+document_suffix, phi_gamma_dict, 6000)
     # GAMMA SECTION
     mass2motif_instances = get_docm2m_bydoc_radu(document, phi_gamma_dict)
     context_dict['mass2motifs'] = mass2motif_instances
@@ -441,10 +445,11 @@ def get_featurem2m_equivalent_radu(feature, phi_gamma_dict):
     m2m = []
     id = phi_gamma_dict['unique_words'][feature.feature_id]
     topic_array = phi_gamma_dict['phi'][0][id]
-    for topic in topic_array:
-        if topic >= 0.01:
-            m2m.append([list(topic_array).index(topic), topic])
+    for topic_probability in topic_array:
+        if topic_probability >= 0.01:
+            m2m.append([phi_gamma_dict['topic_index2name'][list(topic_array).index(topic_probability)], topic_probability])
     return m2m
+
 
 ## function is used to get MocumentMassMass2Motif by document only
 def get_docm2m_bydoc_radu(document, phi_gamma_dict):
@@ -456,7 +461,10 @@ def get_docm2m_bydoc_radu(document, phi_gamma_dict):
     final_gamma_list = []
     for line in initial_gamma_list:
         if line[1] > doc_m2m_prob_threshold:
-            final_gamma_list.append([line[0],line[1],doc_m2m_overlap_threshold])
+            mass2motif_id = int(line[0])
+            mass2motif_name = phi_gamma_dict['topic_id2name'][mass2motif_id]
+            probability = line[1]
+            final_gamma_list.append([mass2motif_name, probability,doc_m2m_overlap_threshold])
     dm2m = final_gamma_list
 
 
@@ -486,7 +494,15 @@ def get_phi_gamma_radu(document):
     gamma_matrix = init_gamma(corpus_dict, k, alpha_vector)
     phi_gamma_dict = perform_e_step_radu(experiment, k, corpus_dict, alpha_vector, beta_matrix,
                                          gamma_matrix, phi_matrix, unique_words, unique_topics, iterations=1000)
-    phi_gamma_dict.update({'unique_words':unique_words})
+    phi_gamma_dict.update({'unique_words': unique_words})
+    topic_id2name = {}
+    topic_index2name = {}
+    for id, index in unique_topics.items():
+        m2m = Mass2Motif.objects.filter(id=id)[0]
+        topic_id2name.update({id:m2m.name})
+        topic_index2name.update({index:m2m.name})
+    phi_gamma_dict.update({'topic_id2name': topic_id2name})
+    phi_gamma_dict.update({'topic_index2name': topic_index2name})
     return phi_gamma_dict
 
 def setup_corpus_radu(unique_words, unique_docs):
@@ -513,31 +529,38 @@ def setup_corpus_radu(unique_words, unique_docs):
 
 def setup_corpus_words_radu(experiment):
     # Get all words/features in the database relevant for the experiment.
-    features = Feature.objects.filter(experiment_id=experiment)
-    experiment_words = []
-    for f in features:
-        if f.id not in experiment_words:
-            experiment_words.append(f.id)
-    # Match each word to an index.
-    unique_words = {}
-    index = 0
-    for word in experiment_words:
-        if word not in unique_words.keys():
-            unique_words.update({word: index})
-            index += 1
+    words_cache_key = 'words_radu_' + str(experiment)
+    unique_words = cache.get(words_cache_key)
+    if unique_words == None:
+        features = Feature.objects.filter(experiment_id=experiment)
+        experiment_words = []
+        for f in features:
+            if f.id not in experiment_words:
+                experiment_words.append(f.id)
+        # Match each word to an index.
+        unique_words = {}
+        index = 0
+        for word in experiment_words:
+            if word not in unique_words.keys():
+                unique_words.update({word: index})
+                index += 1
+        cache.set(words_cache_key, unique_words, cache_time)
     return unique_words
 
 
 def setup_corpus_topics_radu(experiment):
     # Get topics for the experiment. Map them to indices.
-    mi = Mass2Motif.objects.filter(experiment=experiment)
-    unique_topics = {}
-    index = 0
-    for m in mi:
-        unique_topics.update({m.id: index})
-        index += 1
+    topics_cache_key = 'topics_radu_' + str(experiment)
+    unique_topics = cache.get(topics_cache_key)
+    if unique_topics == None:
+        mi = Mass2Motif.objects.filter(experiment=experiment)
+        unique_topics = {}
+        index = 0
+        for m in mi:
+            unique_topics.update({m.id: index})
+            index += 1
+    cache.set(topics_cache_key, unique_topics, cache_time)
     return unique_topics
-
 
 def setup_corpus_docs_radu(document):
     # Map each document to a specific ID.
@@ -550,45 +573,53 @@ def setup_corpus_docs_radu(document):
 
 def setup_alpha_radu(experiment):
     # Get Alphas from database. Transform them to topic_count length vector.
-    unique_topics = setup_corpus_topics_radu(experiment)
-    al = Alpha.objects.filter(mass2motif__experiment=experiment).order_by('mass2motif')
-    alphas = {}
-    for a in al:
-        alphas.update({unique_topics[a.mass2motif_id]: a.value})
-    n_motif = len(alphas)
-    alpha_vec = np.zeros(n_motif)
-    for pos, val in alphas.items():
-        alpha_vec[pos] = val
-    alpha_vector = alpha_vec
+    alpha_cache_key = 'alpha_radu_'+str(experiment)
+    alpha_vector = cache.get(alpha_cache_key)
+    if alpha_vector == None:
+        unique_topics = setup_corpus_topics_radu(experiment)
+        al = Alpha.objects.filter(mass2motif__experiment=experiment).order_by('mass2motif')
+        alphas = {}
+        for a in al:
+            alphas.update({unique_topics[a.mass2motif_id]: a.value})
+        n_motif = len(alphas)
+        alpha_vec = np.zeros(n_motif)
+        for pos, val in alphas.items():
+            alpha_vec[pos] = val
+        alpha_vector = alpha_vec
+        cache.set(alpha_cache_key, alpha_vector, cache_time)
     return alpha_vector
 
 
 def setup_beta_radu(experiment, unique_words, unique_topics, k, w):
     # Get the Beta values from the database in list form -> topic, word, probability.
-    beta_pre_pivot = []
-    mi = Mass2MotifInstance.objects.filter(mass2motif__experiment=experiment)
-    for m in mi:
-        beta_pre_pivot.append([unique_topics[m.mass2motif_id], unique_words[m.feature_id], m.probability])
-    # Create the Beta matrix.
-    output_arr_beta = np.array(beta_pre_pivot)
-    pivot_table = np.zeros((k, w)).astype('float')
-    i = 0
-    max = len(beta_pre_pivot)
-    while i < max:
-        pivot_table[int(output_arr_beta[i][0]), int(output_arr_beta[i][1])] = output_arr_beta[i][2]
-        i += 1
-    # Normalise the beta matrix. Beta is now ready to be used in the E-step.
-    pivot_table_normalised = pivot_table
-    i = 0
-    while i < k:
-        row = pivot_table_normalised[i, :]
-        adjusted_row = row + SMALL_NUMBER
-        normalised_row = adjusted_row / np.sum(adjusted_row)
-        np.sum(normalised_row)
-        pivot_table_normalised[i, :] = normalised_row
-        i += 1
-    beta_matrix = pivot_table_normalised
-    return beta_matrix # left off here
+    beta_cache_key = 'beta_radu_' + str(experiment)
+    beta_matrix = cache.get(beta_cache_key)
+    if beta_matrix == None:
+        beta_pre_pivot = []
+        mi = Mass2MotifInstance.objects.filter(mass2motif__experiment=experiment)
+        for m in mi:
+            beta_pre_pivot.append([unique_topics[m.mass2motif_id], unique_words[m.feature_id], m.probability])
+        # Create the Beta matrix.
+        output_arr_beta = np.array(beta_pre_pivot)
+        pivot_table = np.zeros((k, w)).astype('float')
+        i = 0
+        max = len(beta_pre_pivot)
+        while i < max:
+            pivot_table[int(output_arr_beta[i][0]), int(output_arr_beta[i][1])] = output_arr_beta[i][2]
+            i += 1
+        # Normalise the beta matrix. Beta is now ready to be used in the E-step.
+        pivot_table_normalised = pivot_table
+        i = 0
+        while i < k:
+            row = pivot_table_normalised[i, :]
+            adjusted_row = row + SMALL_NUMBER
+            normalised_row = adjusted_row / np.sum(adjusted_row)
+            np.sum(normalised_row)
+            pivot_table_normalised[i, :] = normalised_row
+            i += 1
+        beta_matrix = pivot_table_normalised
+        cache.set(beta_cache_key, beta_matrix, cache_time)
+    return beta_matrix
 
 
 def perform_e_step_radu(experiment, K, corpus, alpha_vector, beta_matrix,
@@ -596,6 +627,7 @@ def perform_e_step_radu(experiment, K, corpus, alpha_vector, beta_matrix,
     n_words = int(len(unique_words))
     temp_beta = np.zeros((K, n_words))
     current_gamma = np.copy(gamma_matrix)
+    # continue_iterations = True
     for i in range(iterations):
         prev_gamma = np.copy(current_gamma)
         for doc in corpus:
