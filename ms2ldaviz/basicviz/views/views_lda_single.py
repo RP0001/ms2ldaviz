@@ -41,6 +41,7 @@ import csv
 from scipy.special import psi as psi
 from lda import SMALL_NUMBER
 from django.core.cache import cache
+import time
 
 #RADU'S CACHING VARIABLES
 cache_time=6000 #we assume all caching is maintained for 6000 seconds
@@ -274,9 +275,9 @@ def show_doc(request, doc_id):
     if document.csid:
         context_dict['csid'] = document.csid
 
-    # remove this -- deprecated...
-    if document.image_url:
-        context_dict['image_url'] = document.image_url
+    # # remove this -- deprecated...
+    # if document.image_url:
+    #     context_dict['image_url'] = document.image_url
 
     if not document.mol_string:
         from chemspipy import ChemSpider
@@ -467,7 +468,7 @@ def get_docm2m_bydoc_radu(document, phi_gamma_dict):
 
 # Implementation of the prototype here to calculate Gamma and Phi on the spot.
 def get_phi_gamma_radu(document):
-    # Setup common variables for the e-step. 
+    # Setup common variables for the e-step.
     experiment = document.experiment
     unique_words = setup_corpus_words_radu(experiment)
     w = len(unique_words)
@@ -637,7 +638,7 @@ def perform_e_step_radu(experiment, K, corpus, alpha_vector, beta_matrix,
         current_gamma = np.copy(gamma_matrix)
         gamma_diff = ((current_gamma - prev_gamma)**2).sum()
         print gamma_diff
-        if gamma_diff < 1e-15:
+        if gamma_diff < 1e-4:
             continue_iterations = False
     gamma_vector = get_normalised_gamma_radu(gamma_matrix, unique_topics)
     return {'phi':phi_matrix, 'gamma':gamma_vector}
