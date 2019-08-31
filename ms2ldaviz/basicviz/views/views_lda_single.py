@@ -309,17 +309,15 @@ def show_doc_radu(request, doc_id):
     experiment = document.experiment #check the corresponding experiment from the document
     if not check_user(request, experiment): # assume permission granted
         return HttpResponse("You don't have permission to access this page")
-    print document.experiment.experiment_type
     # Refactoring concerns only experiment type 0, since it is related to LDA and not decomposition.
     # This is the section of the view that needs to be modified:
     if document.experiment.experiment_type == '0':
         context_dict = get_doc_context_dict_radu(document)
-    # With the exception of the rendering line below, the rest of the view remains unchanged.
+    # With the exception of the rendering line below, the rest of the view (method) remains unchanged.
     elif document.experiment.experiment_type == '1':
         context_dict = get_decomp_doc_context_dict(document)
     else:
         context_dict = {}
-    print context_dict
     # The assignment to the content dict remains the same
     context_dict['document'] = document
     context_dict['experiment'] = experiment
@@ -361,13 +359,15 @@ def get_doc_context_dict_radu(document):
     experiment = document.experiment # Get chosen document experiment ID.
 
     # Check if Phi and Theta are in the cache, if not compute them on the fly.
+    # Get document suffix string to add it to the cache key name.
     document_suffix = str(document.id)
+    # Django caching is implemented here. If key exits, it is retrieved. If not, there is computation on the fly.
     phi_gamma_dict = cache.get('phi_gamma_radu_'+document_suffix)
     if phi_gamma_dict == None:
         phi_gamma_dict = get_phi_gamma_radu(document)
         cache.set('phi_gamma_radu_'+document_suffix, phi_gamma_dict, cache_time)
     # Get Theta on the fly without retrieving it from the database.
-    mass2motif_instances = get_docm2m_bydoc_radu(document, phi_gamma_dict)
+    mass2motif_instances = get_docm2m_bydoc_radu(document, phi_gamma_dict) #refactored below
     context_dict['mass2motifs'] = mass2motif_instances
 
     # Get Phi on the fly without retrieving it from the database.
@@ -375,7 +375,7 @@ def get_doc_context_dict_radu(document):
     original_experiment = None
     for feature_instance in features:
         if feature_instance.intensity > 0:
-            m2m = get_featurem2m_equivalent_radu(feature_instance, phi_gamma_dict)
+            m2m = get_featurem2m_equivalent_radu(feature_instance, phi_gamma_dict) #refactored below
             smiles_to_docs = defaultdict(set)
             docs_to_subs = {}
 
@@ -450,14 +450,14 @@ def get_featurem2m_equivalent_radu(feature, phi_gamma_dict):
     return m2m
 
 
-# Computes DocumentMass2MotifData on the fly, retrieves it in list form: [topic_name, probability, overlap]
+# Computes DocumentMass2Motif data on the fly, retrieves it in list form: [topic_name, probability, overlap]
 def get_docm2m_bydoc_radu(document, phi_gamma_dict):
     experiment = document.experiment
     doc_m2m_prob_threshold, doc_m2m_overlap_threshold = get_prob_overlap_thresholds(experiment)
     initial_gamma_list = phi_gamma_dict['gamma']
     final_gamma_list = []
     for line in initial_gamma_list:
-        if line[1] > doc_m2m_prob_threshold:
+        if line[1] > doc_m2m_prob_threshold: #thresholding applies
             mass2motif_id = int(line[0])
             mass2motif_name = phi_gamma_dict['topic_id2name'][mass2motif_id]
             probability = line[1]
@@ -480,9 +480,11 @@ def get_phi_gamma_radu(document):
     beta_matrix = setup_beta_radu(experiment, unique_words, unique_topics, k, w)
     phi_matrix = init_phi_radu(corpus_dict, k)
     gamma_matrix = init_gamma(corpus_dict, k, alpha_vector)
-    phi_gamma_dict = perform_e_step_radu(experiment, k, corpus_dict, alpha_vector, beta_matrix,
-                                         gamma_matrix, phi_matrix, unique_words, unique_topics, iterations=1000)
+    #do the e-step.
+    phi_gamma_dict = perform_e_step_radu(k, corpus_dict, alpha_vector, beta_matrix,
+                                         gamma_matrix, phi_matrix, unique_words, unique_topics)
     phi_gamma_dict.update({'unique_words': unique_words})
+    #convert topic id or index to name for display on the actual page
     topic_id2name = {}
     topic_index2name = {}
     for id, index in unique_topics.items():
@@ -493,8 +495,9 @@ def get_phi_gamma_radu(document):
     phi_gamma_dict.update({'topic_index2name': topic_index2name})
     return phi_gamma_dict
 
+
+# Get words/features for all documents chosen. The output columns are doc_id, word_id and intensity.
 def setup_corpus_radu(unique_words, unique_docs):
-    # Get words/features for all documents chosen. The output columns are doc_id, word_id and intensity.
     feature_instances = FeatureInstance.objects.filter(document_id__in=unique_docs.keys(),
                                                        feature_id__in=unique_words.keys())
     doc_word_data = []
@@ -515,8 +518,9 @@ def setup_corpus_radu(unique_words, unique_docs):
     return corpus_dict
 
 
+# Get all words/features in the database relevant for the experiment.
 def setup_corpus_words_radu(experiment):
-    # Get all words/features in the database relevant for the experiment.
+    #caching system employed for words
     words_cache_key = 'words_radu_' + str(experiment)
     unique_words = cache.get(words_cache_key)
     if unique_words == None:
@@ -535,9 +539,9 @@ def setup_corpus_words_radu(experiment):
         cache.set(words_cache_key, unique_words, cache_time)
     return unique_words
 
-
+# Get topics for the experiment. Map them to indices.
 def setup_corpus_topics_radu(experiment):
-    # Get topics for the experiment. Map them to indices.
+    # caching system employed for topics
     topics_cache_key = 'topics_radu_' + str(experiment)
     unique_topics = cache.get(topics_cache_key)
     if unique_topics == None:
@@ -550,17 +554,17 @@ def setup_corpus_topics_radu(experiment):
     cache.set(topics_cache_key, unique_topics, cache_time)
     return unique_topics
 
+# Map each document to a specific index. (only one document)
 def setup_corpus_docs_radu(document):
-    # Map each document to a specific ID.
-    print document.id
     unique_docs = {}
-    i = 0 # if it would me more documents we would iterate i+=1, but we only have one document
+    i = 0 # if it would be for more documents we would iterate i+=1, but we only have one document
     unique_docs.update({document.id: i})
     return unique_docs
 
 
+# Get Alphas from database. Transform them to topic_count length vector.
 def setup_alpha_radu(experiment):
-    # Get Alphas from database. Transform them to topic_count length vector.
+    # caching system implemented for alphas
     alpha_cache_key = 'alpha_radu_'+str(experiment)
     alpha_vector = cache.get(alpha_cache_key)
     if alpha_vector == None:
@@ -578,8 +582,9 @@ def setup_alpha_radu(experiment):
     return alpha_vector
 
 
+# Get the Beta values from the database in list form -> topic, word, probability.
 def setup_beta_radu(experiment, unique_words, unique_topics, k, w):
-    # Get the Beta values from the database in list form -> topic, word, probability.
+    # caching system implemented for beta
     beta_cache_key = 'beta_radu_' + str(experiment)
     beta_matrix = cache.get(beta_cache_key)
     if beta_matrix == None:
@@ -610,16 +615,17 @@ def setup_beta_radu(experiment, unique_words, unique_topics, k, w):
     return beta_matrix
 
 
-def perform_e_step_radu(experiment, K, corpus, alpha_vector, beta_matrix,
-                        gamma_matrix, phi_matrix, unique_words, unique_topics, iterations = 1000):
+# perform the e-step as per the client's implementation
+# The code below has been refactored from lda.py at https://github.com/sdrogers/ms2ldaviz/blob/master/lda/code/lda.py
+# This is an implementation of Blei's loop as described on http://www.jmlr.org/papers/volume3/blei03a/blei03a.pdf,p1005
+def perform_e_step_radu(K, corpus, alpha_vector, beta_matrix,
+                        gamma_matrix, phi_matrix, unique_words, unique_topics):
     n_words = int(len(unique_words))
     temp_beta = np.zeros((K, n_words))
     current_gamma = np.copy(gamma_matrix)
     continue_iterations=True
     i = 0
-    while continue_iterations==True:
-        i+=1
-        print 'iteration' + str(i)
+    while continue_iterations==True: #smart iteration to convergence
         prev_gamma = np.copy(current_gamma)
         for doc in corpus:
             d = int(doc)
@@ -637,12 +643,13 @@ def perform_e_step_radu(experiment, K, corpus, alpha_vector, beta_matrix,
             gamma_matrix[d, pos] = SMALL_NUMBER
         current_gamma = np.copy(gamma_matrix)
         gamma_diff = ((current_gamma - prev_gamma)**2).sum()
-        print gamma_diff
         if gamma_diff < 1e-4:
             continue_iterations = False
     gamma_vector = get_normalised_gamma_radu(gamma_matrix, unique_topics)
     return {'phi':phi_matrix, 'gamma':gamma_vector}
 
+
+#normalise gamma (supporting method for the e-step above)
 def get_normalised_gamma_radu(gamma_matrix, unique_topics):
     gamma_vector = np.copy(gamma_matrix[0])
     gamma_vector /= np.sum(gamma_vector)
@@ -652,10 +659,11 @@ def get_normalised_gamma_radu(gamma_matrix, unique_topics):
         position = gamma_vector.tolist().index(topic)
         for name, pos in unique_topics.items():
             if pos == position:
-                print position
                 gamma_vector_list.append([name, probability])
     return gamma_vector_list
 
+
+# initialise phi (supporting method for e-step above)
 def init_phi_radu(corpus, K):
     phi_matrix = {}
     for doc in corpus:
@@ -666,6 +674,8 @@ def init_phi_radu(corpus, K):
             phi_matrix[d][w] = np.zeros(K)
     return phi_matrix
 
+
+# initialise gamma (supporting method for e-step above)
 def init_gamma(corpus, K, alpha_vector):
     alpha_vector=alpha_vector
     gamma_matrix = np.zeros((int(len(corpus)), int(K)))  # 3x500 shape
